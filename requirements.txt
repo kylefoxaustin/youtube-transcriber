@@ -1,0 +1,13 @@
+# Core dependencies
+faster-whisper>=1.0.0
+yt-dlp>=2024.1.0
+
+# Optional: Speaker diarization (requires HuggingFace token)
+# Uncomment to enable diarization features:
+# whisperx @ git+https://github.com/m-bain/whisperx.git
+# pyannote.audio>=3.1.0
+
+# These are typically installed with faster-whisper but listed for clarity
+# torch>=2.0.0
+# torchaudio>=2.0.0
+# numpy>=1.20.0
