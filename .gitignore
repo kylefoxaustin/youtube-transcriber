@@ -1,0 +1,23 @@
+# Virtual environment
+venv/
+.venv/
+
+# Output files
+output/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+
+# Audio files
+*.wav
+*.mp3
+*.m4a
+
+# IDE
+.vscode/
+.idea/
