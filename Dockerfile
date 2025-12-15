@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create non-root user for security
 RUN useradd -m -u 1000 transcriber
 RUN mkdir -p /app/output /app/models && chown -R transcriber:transcriber /app
+RUN mkdir -p /app/output /app/models /home/transcriber/.cache && chown -R transcriber:transcriber /app /home/transcriber/.cache
 
 # Switch to non-root user
 USER transcriber
