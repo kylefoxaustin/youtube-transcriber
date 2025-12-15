@@ -37,7 +37,7 @@ Local AI-powered YouTube transcription using faster-whisper. Runs entirely on yo
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/youtube-transcriber.git
+git clone https://github.com/kylefoxaustin/youtube-transcriber.git
 cd youtube-transcriber
 
 # Setup
@@ -52,7 +52,7 @@ python transcribe.py https://www.youtube.com/watch?v=VIDEO_ID
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/youtube-transcriber.git
+git clone https://github.com/kylefoxaustin/youtube-transcriber.git
 cd youtube-transcriber
 
 # Start
@@ -409,13 +409,17 @@ yt-dlp --flat-playlist --print url \
 
 ---
 
+## Author
+
+**Kyle Fox** - [GitHub](https://github.com/kylefoxaustin)
+
 ## License
 
 MIT License - Use freely for personal and commercial projects.
 
 ## Credits
 
-Built with:
+Built with these excellent open-source projects:
 - [faster-whisper](https://github.com/guillaumekln/faster-whisper)
 - [whisperX](https://github.com/m-bain/whisperx)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
