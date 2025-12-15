@@ -1,0 +1,37 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+*.egg-info/
+.eggs/
+
+# Output (mounted as volume instead)
+output/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.dockerignore
+docker-compose*.yml
+
+# Docs
+*.md
+!README.md
+
+# Misc
+.env
+.env.local
+*.bak

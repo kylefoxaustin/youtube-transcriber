@@ -1,7 +1,3 @@
-# Virtual environment
-venv/
-.venv/
-
 # Output files
 output/
 *.log
@@ -10,14 +6,33 @@ output/
 __pycache__/
 *.pyc
 *.pyo
-.eggs/
+*.pyd
+.Python
+venv/
+.venv/
 *.egg-info/
+.eggs/
 
-# Audio files
+# Environment
+.env
+.env.local
+
+# Audio files (temporary)
 *.wav
 *.mp3
 *.m4a
+*.webm
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.bak

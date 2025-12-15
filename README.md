@@ -1,81 +1,71 @@
-# YouTube Video Transcriber
+# YouTube Transcriber 🎬
 
-A comprehensive local transcription pipeline for YouTube videos using faster-whisper. Runs entirely on your own hardware with GPU acceleration.
+Local AI-powered YouTube transcription using faster-whisper. Runs entirely on your hardware with GPU acceleration.
+
+**Two ways to use it:**
+- **CLI** - Quick command-line transcription
+- **Web UI** - Paste URLs, watch progress, download results
+
+---
 
 ## Features
 
-- **GPU-accelerated transcription** using faster-whisper (CTranslate2)
-- **Speaker diarization** - identify who said what (optional, via whisperX)
-- **Word-level timestamps** for precise alignment
-- **Multiple output formats**: SRT, VTT, TXT, JSON, TSV
-- **Batch processing** from URLs, files, or playlists
-- **Resume capability** - skip already processed videos
-- **Organized output** - each video gets its own folder with metadata
+- 🚀 **GPU Accelerated** - CUDA support via faster-whisper (CTranslate2)
+- 🎯 **High Accuracy** - Whisper large-v3 model with word-level timestamps
+- 🗣️ **Speaker Diarization** - Identify who said what (optional, via whisperX)
+- 📁 **Multiple Formats** - SRT, VTT, TXT, JSON output
+- 🔄 **Batch Processing** - Process playlists, channels, or URL lists
+- 🌐 **Web Interface** - Real-time progress with Docker deployment
+- 💾 **Resume Support** - Skip already-processed videos
+- 🏠 **Fully Local** - No cloud APIs, everything on your machine
+
+---
 
 ## Requirements
 
 - Python 3.10+
-- NVIDIA GPU with CUDA support (recommended)
-- ~10GB disk space for the large-v3 model
-- ffmpeg (for audio extraction)
+- NVIDIA GPU with CUDA support (or CPU fallback)
+- ~10GB disk space for large-v3 model
+- ffmpeg
+- Docker (optional, for web UI)
 
-## Installation
+---
 
-### 1. Install system dependencies
+## Quick Start
 
-```bash
-# Ubuntu/Debian
-sudo apt update
-sudo apt install ffmpeg python3-pip python3-venv
-
-# Verify ffmpeg
-ffmpeg -version
-```
-
-### 2. Create virtual environment (recommended)
+### Option A: Command Line
 
 ```bash
+# Clone
+git clone https://github.com/YOUR_USERNAME/youtube-transcriber.git
 cd youtube-transcriber
-python3 -m venv venv
+
+# Setup
+bash setup.sh
 source venv/bin/activate
+
+# Transcribe!
+python transcribe.py https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
-### 3. Install Python packages
+### Option B: Docker Web UI
 
 ```bash
-# Core packages
-pip install faster-whisper yt-dlp
+# Clone
+git clone https://github.com/YOUR_USERNAME/youtube-transcriber.git
+cd youtube-transcriber
 
-# Verify CUDA is available
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+# Start
+docker compose up -d
+
+# Open http://localhost:8000
 ```
 
-### 4. (Optional) Install speaker diarization
+---
 
-Speaker diarization requires whisperX and a HuggingFace token:
+## CLI Usage
 
-```bash
-# Install whisperX
-pip install git+https://github.com/m-bain/whisperx.git
-
-# Get a HuggingFace token (free):
-# 1. Create account at https://huggingface.co
-# 2. Go to https://huggingface.co/settings/tokens
-# 3. Create a token with read access
-# 4. Accept the pyannote model terms:
-#    - https://huggingface.co/pyannote/speaker-diarization-3.1
-#    - https://huggingface.co/pyannote/segmentation-3.0
-
-# Set your token
-export HF_TOKEN='hf_your_token_here'
-
-# Or add to ~/.bashrc for persistence
-echo 'export HF_TOKEN="hf_your_token_here"' >> ~/.bashrc
-```
-
-## Usage
-
-### Basic Usage
+### Basic Commands
 
 ```bash
 # Single video
@@ -83,266 +73,341 @@ python transcribe.py https://www.youtube.com/watch?v=VIDEO_ID
 
 # Multiple videos
 python transcribe.py URL1 URL2 URL3
-```
 
-### From a File
-
-Create a text file with one URL per line:
-
-```bash
-# urls.txt
-https://www.youtube.com/watch?v=abc123
-https://www.youtube.com/watch?v=def456
-# Comments are ignored
-https://www.youtube.com/watch?v=ghi789
-```
-
-Then run:
-
-```bash
+# From a file (one URL per line)
 python transcribe.py --file urls.txt
-```
 
-### Process a Playlist
-
-```bash
-python transcribe.py --playlist "https://www.youtube.com/playlist?list=PLxxxxxxxx"
-```
-
-### With Speaker Diarization
-
-```bash
-export HF_TOKEN='your_token'
-python transcribe.py --diarize https://www.youtube.com/watch?v=VIDEO_ID
-
-# Specify expected number of speakers
-python transcribe.py --diarize --min-speakers 2 --max-speakers 4 URL
+# Entire playlist
+python transcribe.py --playlist "https://www.youtube.com/playlist?list=PLxxxxx"
 ```
 
 ### Model Selection
 
-| Model | Size | VRAM | Speed | Accuracy |
-|-------|------|------|-------|----------|
-| tiny | 75MB | ~1GB | Fastest | Lower |
-| base | 142MB | ~1GB | Fast | OK |
-| small | 466MB | ~2GB | Medium | Good |
-| medium | 1.5GB | ~5GB | Slower | Better |
-| large-v3 | 3GB | ~10GB | Slowest | Best |
+| Model | VRAM | Speed | Quality |
+|-------|------|-------|---------|
+| tiny | ~1GB | ⚡⚡⚡⚡⚡ | ★★☆☆☆ |
+| base | ~1GB | ⚡⚡⚡⚡ | ★★★☆☆ |
+| small | ~2GB | ⚡⚡⚡ | ★★★☆☆ |
+| medium | ~5GB | ⚡⚡ | ★★★★☆ |
+| large-v3 | ~10GB | ⚡ | ★★★★★ |
 
 ```bash
-# Use a smaller model for faster processing
+# Use a smaller/faster model
 python transcribe.py --model medium URL
 
-# Use CPU if no GPU available (slow!)
-python transcribe.py --model small --device cpu URL
+# Use CPU (slower but no GPU needed)
+python transcribe.py --device cpu --model small URL
 ```
 
-### Output Formats
+### Speaker Diarization
+
+Identify who said what in multi-speaker videos:
 
 ```bash
-# Default: srt, vtt, txt, json
-python transcribe.py URL
+# Requires HuggingFace token
+export HF_TOKEN='your_token'
+python transcribe.py --diarize URL
 
-# Custom formats
-python transcribe.py --formats srt txt URL
-
-# All formats including TSV
-python transcribe.py --formats srt vtt txt json tsv URL
+# Specify expected speakers
+python transcribe.py --diarize --min-speakers 2 --max-speakers 4 URL
 ```
 
-### Other Options
+To enable diarization:
+1. Install whisperX: `pip install git+https://github.com/m-bain/whisperx.git`
+2. Get a token at https://huggingface.co/settings/tokens
+3. Accept model terms at https://huggingface.co/pyannote/speaker-diarization-3.1
+
+### All CLI Options
 
 ```bash
-# Custom output directory
-python transcribe.py --output ~/my_transcripts URL
+python transcribe.py --help
 
-# Force specific language (skip auto-detect)
-python transcribe.py --language en URL
-
-# Re-process already transcribed videos
-python transcribe.py --no-skip URL
-
-# Keep downloaded audio files
-python transcribe.py --keep-audio URL
-
-# Disable word-level timestamps (faster)
-python transcribe.py --no-word-timestamps URL
+Options:
+  --model, -m        Model size (tiny/base/small/medium/large-v2/large-v3)
+  --device           cuda or cpu
+  --compute-type     float16, float32, or int8
+  --language, -l     Force language (auto-detect if not set)
+  --output, -o       Output directory (default: ./output)
+  --formats          Output formats (srt vtt txt json tsv)
+  --diarize, -d      Enable speaker diarization
+  --min-speakers     Min speakers for diarization
+  --max-speakers     Max speakers for diarization
+  --no-word-timestamps  Disable word-level timestamps
+  --no-skip          Re-process already transcribed videos
+  --keep-audio       Keep downloaded audio files
+  --file, -f         File containing URLs
+  --playlist, -p     YouTube playlist URL
 ```
+
+### Extract URLs Helper
+
+Grab all video URLs from a channel before transcribing:
+
+```bash
+# Extract from channel
+python extract_urls.py "https://www.youtube.com/@ChannelName/videos" -o urls.txt
+
+# Extract from playlist
+python extract_urls.py "https://www.youtube.com/playlist?list=PLxxx" -o urls.txt
+
+# Then transcribe
+python transcribe.py --file urls.txt
+```
+
+---
+
+## Docker Web UI
+
+### Starting the Service
+
+```bash
+# Build and start
+docker compose up -d
+
+# Check status
+docker compose ps
+
+# View logs
+docker compose logs -f
+```
+
+Open **http://localhost:8000** in your browser.
+
+### Using the Web Interface
+
+1. Paste YouTube URLs (one per line) into the text box
+2. Click "Start Transcription"
+3. Watch real-time progress for each video
+4. Download results (SRT/VTT/TXT/JSON) when complete
+
+### Management Script
+
+```bash
+./manage.sh start    # Start container
+./manage.sh stop     # Stop container
+./manage.sh restart  # Restart container
+./manage.sh logs     # View live logs
+./manage.sh gpu      # Verify GPU access
+./manage.sh status   # Check if running
+./manage.sh build    # Rebuild image
+./manage.sh clean    # Remove all output
+```
+
+### Configuration
+
+Copy `.env.example` to `.env` and customize:
+
+```bash
+# Whisper model
+MODEL_SIZE=large-v3
+
+# Device (cuda or cpu)
+DEVICE=cuda
+
+# Compute type
+COMPUTE_TYPE=float16
+```
+
+### API Endpoints
+
+The web UI exposes a REST API:
+
+```bash
+# Submit URLs
+curl -X POST http://localhost:8000/api/submit \
+  -H "Content-Type: application/json" \
+  -d '{"urls": "https://www.youtube.com/watch?v=VIDEO_ID"}'
+
+# List all jobs
+curl http://localhost:8000/api/jobs
+
+# Get job status
+curl http://localhost:8000/api/jobs/{job_id}
+
+# Download transcript
+curl http://localhost:8000/api/files/{video_id}/filename.txt
+
+# Health check
+curl http://localhost:8000/health
+```
+
+Real-time updates via Server-Sent Events:
+```javascript
+const events = new EventSource('/api/events');
+events.onmessage = (e) => console.log(JSON.parse(e.data));
+```
+
+---
 
 ## Output Structure
 
 ```
 output/
-├── audio/                          # Temporary audio (deleted unless --keep-audio)
-├── transcripts/
-│   └── VIDEO_ID/
-│       ├── metadata.json           # Video info + transcription settings
-│       ├── Video_Title.srt         # SubRip subtitles
-│       ├── Video_Title.vtt         # WebVTT subtitles
-│       ├── Video_Title.txt         # Plain text with timestamps
-│       └── Video_Title.json        # Full transcript with word timestamps
-└── transcription.log               # Processing log
+├── audio/                          # Temp audio (deleted after processing)
+└── transcripts/
+    └── VIDEO_ID/
+        ├── metadata.json           # Video info + settings
+        ├── Video_Title.srt         # SubRip subtitles
+        ├── Video_Title.vtt         # WebVTT subtitles
+        ├── Video_Title.txt         # Plain text + timestamps
+        └── Video_Title.json        # Full data + word timestamps
 ```
 
-## Output Format Details
+### Output Formats
 
-### SRT (SubRip)
-Standard subtitle format, works with most video players:
+**SRT** - Standard subtitle format for video players:
 ```
 1
 00:00:00,000 --> 00:00:04,500
-[SPEAKER_00] Hello and welcome to today's video.
-
-2
-00:00:04,500 --> 00:00:08,200
-[SPEAKER_01] Thanks for having me!
+Hello and welcome to today's video.
 ```
 
-### VTT (WebVTT)
-Web-friendly subtitle format with speaker tags:
+**VTT** - Web-friendly subtitles with speaker tags:
 ```
 WEBVTT
 
 1
 00:00:00.000 --> 00:00:04.500
-<v SPEAKER_00>Hello and welcome to today's video.
-
-2
-00:00:04.500 --> 00:00:08.200
-<v SPEAKER_01>Thanks for having me!
+<v Speaker1>Hello and welcome to today's video.
 ```
 
-### TXT (Plain Text)
-Easy to read, searchable:
+**TXT** - Readable plain text:
 ```
-SPEAKER_00:
 [00:00:00.000] Hello and welcome to today's video.
-
-SPEAKER_01:
-[00:00:04.500] Thanks for having me!
 ```
 
-### JSON (Full Detail)
-Complete data including word-level timestamps:
+**JSON** - Full data with word-level timestamps:
 ```json
 {
-  "metadata": {
-    "video_id": "abc123",
-    "title": "My Video",
-    "language": "en",
-    ...
-  },
-  "transcript": {
-    "segments": [
-      {
-        "start": 0.0,
-        "end": 4.5,
-        "text": "Hello and welcome",
-        "speaker": "SPEAKER_00",
-        "words": [
-          {"word": "Hello", "start": 0.0, "end": 0.5, "probability": 0.98},
-          ...
-        ]
-      }
-    ]
-  }
+  "segments": [{
+    "start": 0.0,
+    "end": 4.5,
+    "text": "Hello and welcome",
+    "words": [{"word": "Hello", "start": 0.0, "end": 0.5}, ...]
+  }]
 }
 ```
 
-### TSV (Tab-Separated)
-Import into spreadsheets:
-```
-start	end	speaker	text
-0.000	4.500	SPEAKER_00	Hello and welcome to today's video.
-4.500	8.200	SPEAKER_01	Thanks for having me!
-```
+---
 
-## Tips & Tricks
+## Installation Details
 
-### Processing Large Batches
-
-For hundreds of videos, consider running overnight:
-```bash
-nohup python transcribe.py --file urls.txt > transcribe_output.log 2>&1 &
-
-# Monitor progress
-tail -f transcription.log
-```
-
-### Extracting URLs from YouTube
-
-Get all video URLs from a channel using yt-dlp:
-```bash
-# List all videos from a channel (don't download)
-yt-dlp --flat-playlist --print url "https://www.youtube.com/@ChannelName/videos" > channel_urls.txt
-
-# Then transcribe
-python transcribe.py --file channel_urls.txt
-```
-
-### VRAM Management
-
-If you run out of VRAM:
-```bash
-# Use a smaller model
-python transcribe.py --model medium URL
-
-# Or use int8 quantization
-python transcribe.py --compute-type int8 URL
-
-# Or fall back to CPU (slow)
-python transcribe.py --device cpu --model small URL
-```
-
-### Combining with Other Tools
+### Manual Setup (without setup.sh)
 
 ```bash
-# Search transcripts
-grep -r "keyword" output/transcripts/*/
+# System dependencies
+sudo apt update
+sudo apt install ffmpeg python3-pip python3-venv
 
-# Convert JSON to other formats with jq
-cat output/transcripts/*/Video.json | jq '.transcript.segments[].text'
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install packages
+pip install faster-whisper yt-dlp
+
+# For web UI (optional)
+pip install fastapi uvicorn python-multipart
+
+# For diarization (optional)
+pip install git+https://github.com/m-bain/whisperx.git
 ```
+
+### cuDNN Setup
+
+If you get `Unable to load libcudnn_ops.so`:
+
+```bash
+# Install cuDNN
+sudo apt install libcudnn9-cuda-12
+sudo ldconfig
+
+# Verify
+ldconfig -p | grep cudnn
+```
+
+### Docker Prerequisites
+
+```bash
+# Install NVIDIA Container Toolkit
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
+  sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+sudo apt update
+sudo apt install nvidia-container-toolkit
+sudo systemctl restart docker
+```
+
+---
+
+## Performance
+
+**RTX 5090 + large-v3:**
+- ~15x realtime (1 hour video ≈ 4 minutes)
+
+**RTX 3080 + large-v3:**
+- ~5x realtime (1 hour video ≈ 12 minutes)
+
+**CPU + small model:**
+- ~0.5x realtime (1 hour video ≈ 2 hours)
+
+---
 
 ## Troubleshooting
 
 ### "CUDA out of memory"
-- Use a smaller model: `--model medium` or `--model small`
-- Use int8 quantization: `--compute-type int8`
-- Close other GPU applications
+Use a smaller model or int8 quantization:
+```bash
+python transcribe.py --model medium URL
+python transcribe.py --compute-type int8 URL
+```
 
 ### "ffmpeg not found"
 ```bash
 sudo apt install ffmpeg
 ```
 
-### "Could not load library cudnn_ops_infer64_8.dll"
-Your CUDA/cuDNN setup may be incomplete. Verify:
+### "Unable to load libcudnn"
 ```bash
-nvidia-smi  # Should show your GPU
-python -c "import torch; print(torch.cuda.is_available())"  # Should print True
+sudo apt install libcudnn9-cuda-12
+sudo ldconfig
 ```
 
-### Diarization not working
-1. Ensure whisperX is installed: `pip install git+https://github.com/m-bain/whisperx.git`
-2. Set HF_TOKEN: `export HF_TOKEN='your_token'`
-3. Accept model terms on HuggingFace (see installation section)
-
-### Slow downloads
-YouTube may throttle. Try:
+### yt-dlp JavaScript warnings
+These are harmless. To silence:
 ```bash
-# Use aria2 for faster downloads (if installed)
-pip install yt-dlp[aria2]
+sudo apt install deno
 ```
 
-## Performance Benchmarks
+### Docker GPU not working
+```bash
+# Test GPU access
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
 
-On RTX 5090 with large-v3 model:
-- ~10x realtime speed (1 hour video ≈ 6 minutes)
-- Add ~20% time for diarization
+---
 
-On RTX 3080 with large-v3 model:
-- ~5x realtime speed (1 hour video ≈ 12 minutes)
+## Tips & Tricks
+
+### Process overnight
+```bash
+nohup python transcribe.py --file urls.txt > log.txt 2>&1 &
+tail -f transcription.log
+```
+
+### Search transcripts
+```bash
+grep -r "keyword" output/transcripts/
+```
+
+### Extract channel URLs
+```bash
+yt-dlp --flat-playlist --print url \
+  "https://www.youtube.com/@ChannelName/videos" > channel_urls.txt
+```
+
+---
 
 ## License
 
@@ -350,8 +415,9 @@ MIT License - Use freely for personal and commercial projects.
 
 ## Credits
 
-Built on these excellent open-source projects:
+Built with:
 - [faster-whisper](https://github.com/guillaumekln/faster-whisper)
 - [whisperX](https://github.com/m-bain/whisperx)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+- [FastAPI](https://fastapi.tiangolo.com/)
 - [OpenAI Whisper](https://github.com/openai/whisper)

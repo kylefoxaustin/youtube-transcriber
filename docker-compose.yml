@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  transcriber:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: youtube-transcriber
+    
+    # GPU access
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    # Port mapping
+    ports:
+      - "8000:8000"
+    
+    # Persistent storage
+    volumes:
+      # Output transcripts persist on host
+      - ./output:/app/output
+      # Cache Whisper models (avoid re-downloading)
+      - whisper-cache:/home/transcriber/.cache
+    
+    # Environment configuration
+    environment:
+      - MODEL_SIZE=${MODEL_SIZE:-large-v3}
+      - DEVICE=${DEVICE:-cuda}
+      - COMPUTE_TYPE=${COMPUTE_TYPE:-float16}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - NVIDIA_VISIBLE_DEVICES=all
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Resource limits (optional - adjust based on your system)
+    # shm_size: '8gb'  # Increase if you see shared memory errors
+
+volumes:
+  whisper-cache:
+    name: youtube-transcriber-whisper-cache
