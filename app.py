@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-YouTube Transcriber Web Application
+YouTube & Local Media Transcriber Web Application
 FastAPI backend with real-time progress updates via Server-Sent Events
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -17,9 +20,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import yt_dlp
 
@@ -29,6 +31,11 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Supported media extensions
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpeg', '.mpg', '.3gp'}
+AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.wma', '.opus'}
+SUPPORTED_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
 # Import transcription components (lazy load to speed up startup)
 whisper_model = None
@@ -55,6 +62,8 @@ class TranscriptionJob:
     completed_at: Optional[datetime] = None
     output_dir: Optional[str] = None
     error: Optional[str] = None
+    source_type: str = "youtube"  # "youtube" or "local"
+    source_path: Optional[str] = None
 
 
 # Application state
@@ -72,7 +81,7 @@ class AppState:
             await queue.put(event)
 
 
-app = FastAPI(title="YouTube Transcriber", version="1.0.0")
+app = FastAPI(title="YouTube & Local Media Transcriber", version="2.0.0")
 state = AppState()
 
 # Configuration from environment
@@ -80,7 +89,12 @@ MODEL_SIZE = os.environ.get("MODEL_SIZE", "large-v3")
 DEVICE = os.environ.get("DEVICE", "cuda")
 COMPUTE_TYPE = os.environ.get("COMPUTE_TYPE", "float16")
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "output"))
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Max upload size (2GB)
+MAX_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024
 
 
 # Pydantic models
@@ -110,6 +124,47 @@ def get_whisper_model():
         )
         logger.info("Model loaded successfully")
     return whisper_model
+
+
+def generate_file_id(filepath: Path) -> str:
+    """Generate a unique ID for a local file."""
+    stat = filepath.stat()
+    hash_input = f"{filepath.name}_{stat.st_size}_{stat.st_mtime}"
+    return hashlib.md5(hash_input.encode()).hexdigest()[:12]
+
+
+def is_supported_file(filename: str) -> bool:
+    """Check if file extension is supported."""
+    ext = Path(filename).suffix.lower()
+    return ext in SUPPORTED_EXTENSIONS
+
+
+def is_audio_file(filename: str) -> bool:
+    """Check if file is audio."""
+    ext = Path(filename).suffix.lower()
+    return ext in AUDIO_EXTENSIONS
+
+
+def extract_audio_from_video(video_path: Path) -> Path:
+    """Extract audio from video file using ffmpeg."""
+    audio_dir = OUTPUT_DIR / "audio"
+    audio_dir.mkdir(exist_ok=True)
+    audio_path = audio_dir / f"{video_path.stem}.wav"
+    
+    logger.info(f"Extracting audio from: {video_path.name}")
+    
+    cmd = [
+        'ffmpeg', '-y', '-i', str(video_path),
+        '-vn', '-acodec', 'pcm_s16le',
+        '-ar', '16000', '-ac', '1',
+        str(audio_path)
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {result.stderr}")
+    
+    return audio_path
 
 
 def extract_video_info(url: str) -> dict:
@@ -205,20 +260,21 @@ def format_timestamp(seconds: float, format_type: str = "srt") -> str:
         return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
 
-def save_outputs(video_info: dict, transcript: dict, output_dir: Path) -> Path:
+def save_outputs(media_info: dict, transcript: dict, output_dir: Path) -> Path:
     """Save transcript in multiple formats"""
-    video_id = video_info['id']
-    title = video_info['title']
+    media_id = media_info['id']
+    title = media_info['title']
     safe_title = re.sub(r'[<>:"/\\|?*]', '_', title)[:80]
     
     # Create output directory
-    transcript_dir = output_dir / video_id
+    transcript_dir = output_dir / media_id
     transcript_dir.mkdir(parents=True, exist_ok=True)
     
     # Save metadata
     metadata = {
-        'video_id': video_id,
+        'id': media_id,
         'title': title,
+        'source_type': media_info.get('source_type', 'unknown'),
         'transcribed_at': datetime.now().isoformat(),
         'language': transcript['language'],
         'duration': transcript.get('duration'),
@@ -254,8 +310,8 @@ def save_outputs(video_info: dict, transcript: dict, output_dir: Path) -> Path:
     return transcript_dir
 
 
-async def process_job(job_id: str):
-    """Process a single transcription job"""
+async def process_youtube_job(job_id: str):
+    """Process a YouTube transcription job"""
     job = state.jobs.get(job_id)
     if not job:
         return
@@ -302,7 +358,6 @@ async def process_job(job_id: str):
         job.progress = 40
         await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
         
-        # Run transcription (CPU-bound, so run in thread pool)
         loop = asyncio.get_event_loop()
         transcript = await loop.run_in_executor(None, transcribe_audio, audio_path)
         
@@ -313,6 +368,7 @@ async def process_job(job_id: str):
         # Save outputs
         transcript_dir = OUTPUT_DIR / "transcripts"
         transcript_dir.mkdir(parents=True, exist_ok=True)
+        video_info['source_type'] = 'youtube'
         output_path = save_outputs(video_info, transcript, transcript_dir)
         
         # Complete
@@ -333,12 +389,116 @@ async def process_job(job_id: str):
         await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
     
     finally:
-        # Cleanup audio file
         if audio_path and audio_path.exists():
             try:
                 audio_path.unlink()
             except:
                 pass
+
+
+async def process_local_job(job_id: str):
+    """Process a local file transcription job"""
+    job = state.jobs.get(job_id)
+    if not job:
+        return
+    
+    audio_path = None
+    temp_audio = False
+    
+    try:
+        source_path = Path(job.source_path)
+        
+        job.status = JobStatus.DOWNLOADING
+        job.message = "Preparing file..."
+        job.progress = 10
+        await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
+        
+        # Check if already transcribed
+        existing_dir = OUTPUT_DIR / "transcripts" / job.video_id
+        if existing_dir.exists():
+            job.status = JobStatus.COMPLETED
+            job.message = "Already transcribed (using cached result)"
+            job.progress = 100
+            job.output_dir = str(existing_dir)
+            job.completed_at = datetime.now()
+            await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
+            return
+        
+        # Prepare audio
+        if is_audio_file(source_path.name):
+            audio_path = source_path
+        else:
+            job.message = "Extracting audio from video..."
+            job.progress = 20
+            await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
+            
+            loop = asyncio.get_event_loop()
+            audio_path = await loop.run_in_executor(None, extract_audio_from_video, source_path)
+            temp_audio = True
+        
+        job.progress = 30
+        job.message = "Starting transcription..."
+        await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
+        
+        # Transcribe
+        job.status = JobStatus.TRANSCRIBING
+        job.message = "Transcribing audio..."
+        job.progress = 40
+        await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
+        
+        loop = asyncio.get_event_loop()
+        transcript = await loop.run_in_executor(None, transcribe_audio, audio_path)
+        
+        job.progress = 85
+        job.message = "Saving transcripts..."
+        await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
+        
+        # Save outputs
+        transcript_dir = OUTPUT_DIR / "transcripts"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        
+        media_info = {
+            'id': job.video_id,
+            'title': job.title,
+            'source_type': 'local',
+        }
+        output_path = save_outputs(media_info, transcript, transcript_dir)
+        
+        # Complete
+        job.status = JobStatus.COMPLETED
+        job.message = "Transcription complete!"
+        job.progress = 100
+        job.output_dir = str(output_path)
+        job.completed_at = datetime.now()
+        await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
+        
+        logger.info(f"Completed: {job.title}")
+        
+    except Exception as e:
+        logger.error(f"Job {job_id} failed: {e}")
+        job.status = JobStatus.FAILED
+        job.message = f"Error: {str(e)}"
+        job.error = str(e)
+        await state.broadcast({'type': 'job_update', 'job': job_to_dict(job)})
+    
+    finally:
+        if temp_audio and audio_path and audio_path.exists():
+            try:
+                audio_path.unlink()
+            except:
+                pass
+
+
+async def process_job(job_id: str):
+    """Process a transcription job (routes to YouTube or local handler)"""
+    job = state.jobs.get(job_id)
+    if not job:
+        return
+    
+    if job.source_type == "local":
+        await process_local_job(job_id)
+    else:
+        await process_youtube_job(job_id)
 
 
 async def process_queue():
@@ -371,6 +531,7 @@ def job_to_dict(job: TranscriptionJob) -> dict:
         'completed_at': job.completed_at.isoformat() if job.completed_at else None,
         'output_dir': job.output_dir,
         'error': job.error,
+        'source_type': job.source_type,
     }
 
 
@@ -416,7 +577,7 @@ async def submit_urls(submission: URLSubmission):
             continue
         
         job_id = str(uuid.uuid4())[:8]
-        job = TranscriptionJob(id=job_id, url=url)
+        job = TranscriptionJob(id=job_id, url=url, source_type="youtube")
         state.jobs[job_id] = job
         state.queue.append(job_id)
         jobs_created.append(job_to_dict(job))
@@ -424,10 +585,63 @@ async def submit_urls(submission: URLSubmission):
     if not jobs_created:
         raise HTTPException(status_code=400, detail="No valid YouTube URLs found")
     
-    # Broadcast new jobs
     await state.broadcast({'type': 'jobs_added', 'jobs': jobs_created})
     
     return {"message": f"Added {len(jobs_created)} job(s) to queue", "jobs": jobs_created}
+
+
+@app.post("/api/upload")
+async def upload_files(files: list[UploadFile] = File(...)):
+    """Upload local media files for transcription"""
+    jobs_created = []
+    errors = []
+    
+    for file in files:
+        # Validate file type
+        if not is_supported_file(file.filename):
+            errors.append(f"Unsupported file type: {file.filename}")
+            continue
+        
+        try:
+            # Save uploaded file
+            file_id = str(uuid.uuid4())[:8]
+            safe_filename = re.sub(r'[<>:"/\\|?*]', '_', file.filename)
+            upload_path = UPLOAD_DIR / f"{file_id}_{safe_filename}"
+            
+            with open(upload_path, 'wb') as f:
+                content = await file.read()
+                if len(content) > MAX_UPLOAD_SIZE:
+                    errors.append(f"File too large: {file.filename} (max 2GB)")
+                    continue
+                f.write(content)
+            
+            # Create job
+            title = Path(file.filename).stem
+            job = TranscriptionJob(
+                id=file_id,
+                url=f"local://{safe_filename}",
+                title=title,
+                video_id=file_id,
+                source_type="local",
+                source_path=str(upload_path),
+            )
+            state.jobs[file_id] = job
+            state.queue.append(file_id)
+            jobs_created.append(job_to_dict(job))
+            
+        except Exception as e:
+            errors.append(f"Failed to process {file.filename}: {str(e)}")
+    
+    if not jobs_created and errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    
+    await state.broadcast({'type': 'jobs_added', 'jobs': jobs_created})
+    
+    result = {"message": f"Added {len(jobs_created)} file(s) to queue", "jobs": jobs_created}
+    if errors:
+        result["errors"] = errors
+    
+    return result
 
 
 @app.get("/api/jobs")
@@ -451,6 +665,15 @@ async def get_job(job_id: str):
 async def delete_job(job_id: str):
     """Delete a job from the list"""
     if job_id in state.jobs:
+        job = state.jobs[job_id]
+        
+        # Clean up uploaded file if local
+        if job.source_type == "local" and job.source_path:
+            try:
+                Path(job.source_path).unlink(missing_ok=True)
+            except:
+                pass
+        
         if job_id in state.queue:
             state.queue.remove(job_id)
         del state.jobs[job_id]
@@ -467,7 +690,6 @@ async def sse_events(request: Request):
     
     async def event_generator():
         try:
-            # Send initial state
             jobs = [job_to_dict(job) for job in state.jobs.values()]
             yield f"data: {json.dumps({'type': 'initial', 'jobs': jobs})}\n\n"
             
@@ -479,7 +701,6 @@ async def sse_events(request: Request):
                     event = await asyncio.wait_for(queue.get(), timeout=30)
                     yield f"data: {json.dumps(event)}\n\n"
                 except asyncio.TimeoutError:
-                    # Send keepalive
                     yield f"data: {json.dumps({'type': 'ping'})}\n\n"
         finally:
             state.subscribers.remove(queue)
@@ -510,13 +731,21 @@ async def get_transcript_text(video_id: str):
     if not transcript_dir.exists():
         raise HTTPException(status_code=404, detail="Transcript not found")
     
-    # Find the .txt file
     txt_files = list(transcript_dir.glob("*.txt"))
     if not txt_files:
         raise HTTPException(status_code=404, detail="Transcript file not found")
     
     with open(txt_files[0], 'r', encoding='utf-8') as f:
         return {"text": f.read(), "filename": txt_files[0].name}
+
+
+@app.get("/api/formats")
+async def get_supported_formats():
+    """Get list of supported file formats"""
+    return {
+        "video": sorted(VIDEO_EXTENSIONS),
+        "audio": sorted(AUDIO_EXTENSIONS),
+    }
 
 
 def get_html_template() -> str:
@@ -526,7 +755,7 @@ def get_html_template() -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube Transcriber</title>
+    <title>YouTube & Media Transcriber</title>
     <style>
         * {
             margin: 0;
@@ -579,6 +808,41 @@ def get_html_template() -> str:
             color: #00d2ff;
         }
         
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+        
+        .tab {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: transparent;
+            color: #888;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .tab.active {
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            color: #fff;
+            border-color: transparent;
+        }
+        
+        .tab:hover:not(.active) {
+            border-color: #00d2ff;
+            color: #00d2ff;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
         textarea {
             width: 100%;
             height: 120px;
@@ -600,6 +864,66 @@ def get_html_template() -> str:
         
         textarea::placeholder {
             color: #666;
+        }
+        
+        .drop-zone {
+            border: 2px dashed rgba(255,255,255,0.3);
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 16px;
+        }
+        
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: #00d2ff;
+            background: rgba(0, 210, 255, 0.1);
+        }
+        
+        .drop-zone-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+        
+        .drop-zone-text {
+            color: #888;
+            margin-bottom: 8px;
+        }
+        
+        .drop-zone-formats {
+            font-size: 0.8rem;
+            color: #666;
+        }
+        
+        .file-input {
+            display: none;
+        }
+        
+        .selected-files {
+            margin-top: 12px;
+        }
+        
+        .selected-file {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 6px;
+            margin-bottom: 6px;
+        }
+        
+        .selected-file-name {
+            font-size: 0.9rem;
+        }
+        
+        .selected-file-remove {
+            background: none;
+            border: none;
+            color: #ff4757;
+            cursor: pointer;
+            font-size: 1.2rem;
         }
         
         .btn {
@@ -699,7 +1023,12 @@ def get_html_template() -> str:
             margin-right: 12px;
         }
         
-        .job-status {
+        .job-badges {
+            display: flex;
+            gap: 6px;
+        }
+        
+        .job-status, .job-source {
             font-size: 0.75rem;
             padding: 4px 8px;
             border-radius: 4px;
@@ -713,6 +1042,9 @@ def get_html_template() -> str:
         .status-transcribing { background: #3498db; }
         .status-completed { background: #27ae60; }
         .status-failed { background: #e74c3c; }
+        
+        .source-youtube { background: #ff0000; }
+        .source-local { background: #9b59b6; }
         
         .job-url {
             font-size: 0.85rem;
@@ -792,22 +1124,42 @@ def get_html_template() -> str:
         @media (max-width: 600px) {
             .stats { flex-direction: column; }
             h1 { font-size: 1.8rem; }
+            .tabs { flex-direction: column; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>🎬 YouTube Transcriber</h1>
-            <p class="subtitle">Local AI-powered transcription with GPU acceleration</p>
+            <h1>🎬 Media Transcriber</h1>
+            <p class="subtitle">Local AI-powered transcription • YouTube & Local Files</p>
         </header>
         
         <section class="input-section">
-            <h2>📋 Add Videos to Transcribe</h2>
-            <textarea id="urlInput" placeholder="Paste YouTube URLs here (one per line)&#10;&#10;https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."></textarea>
-            <button class="btn" id="submitBtn" onclick="submitUrls()">
-                Start Transcription
-            </button>
+            <div class="tabs">
+                <button class="tab active" data-tab="youtube">📺 YouTube URLs</button>
+                <button class="tab" data-tab="upload">📁 Upload Files</button>
+            </div>
+            
+            <div id="youtube-tab" class="tab-content active">
+                <textarea id="urlInput" placeholder="Paste YouTube URLs here (one per line)&#10;&#10;https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."></textarea>
+                <button class="btn" id="submitBtn" onclick="submitUrls()">
+                    Start Transcription
+                </button>
+            </div>
+            
+            <div id="upload-tab" class="tab-content">
+                <div class="drop-zone" id="dropZone">
+                    <div class="drop-zone-icon">📂</div>
+                    <div class="drop-zone-text">Drag & drop files here or click to browse</div>
+                    <div class="drop-zone-formats">MP4, MKV, AVI, MOV, MP3, WAV, M4A, and more</div>
+                </div>
+                <input type="file" id="fileInput" class="file-input" multiple accept=".mp4,.mkv,.avi,.mov,.wmv,.flv,.webm,.m4v,.mpeg,.mpg,.3gp,.mp3,.wav,.m4a,.aac,.ogg,.flac,.wma,.opus">
+                <div class="selected-files" id="selectedFiles"></div>
+                <button class="btn" id="uploadBtn" onclick="uploadFiles()" disabled>
+                    Upload & Transcribe
+                </button>
+            </div>
         </section>
         
         <div class="stats">
@@ -830,9 +1182,9 @@ def get_html_template() -> str:
             <div class="job-list" id="jobList">
                 <div class="empty-state">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4V2a1 1 0 011-1h8a1 1 0 011 1v2M7 4h10M7 4l-1 16a1 1 0 001 1h10a1 1 0 001-1L17 4M10 9v8M14 9v8" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
-                    <p>No transcription jobs yet.<br>Paste some YouTube URLs above to get started!</p>
+                    <p>No transcription jobs yet.<br>Add YouTube URLs or upload files to get started!</p>
                 </div>
             </div>
         </section>
@@ -845,6 +1197,112 @@ def get_html_template() -> str:
     <script>
         let jobs = {};
         let eventSource = null;
+        let selectedFiles = [];
+        
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
+            });
+        });
+        
+        // File upload handling
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        
+        dropZone.addEventListener('click', () => fileInput.click());
+        
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+        
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+        
+        fileInput.addEventListener('change', () => {
+            handleFiles(fileInput.files);
+        });
+        
+        function handleFiles(files) {
+            for (const file of files) {
+                if (!selectedFiles.find(f => f.name === file.name)) {
+                    selectedFiles.push(file);
+                }
+            }
+            renderSelectedFiles();
+        }
+        
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            renderSelectedFiles();
+        }
+        
+        function renderSelectedFiles() {
+            const container = document.getElementById('selectedFiles');
+            const uploadBtn = document.getElementById('uploadBtn');
+            
+            if (selectedFiles.length === 0) {
+                container.innerHTML = '';
+                uploadBtn.disabled = true;
+                return;
+            }
+            
+            uploadBtn.disabled = false;
+            container.innerHTML = selectedFiles.map((file, i) => `
+                <div class="selected-file">
+                    <span class="selected-file-name">📄 ${file.name}</span>
+                    <button class="selected-file-remove" onclick="removeFile(${i})">×</button>
+                </div>
+            `).join('');
+        }
+        
+        async function uploadFiles() {
+            if (selectedFiles.length === 0) return;
+            
+            const btn = document.getElementById('uploadBtn');
+            btn.disabled = true;
+            btn.textContent = 'Uploading...';
+            
+            const formData = new FormData();
+            for (const file of selectedFiles) {
+                formData.append('files', file);
+            }
+            
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    selectedFiles = [];
+                    renderSelectedFiles();
+                    if (data.errors) {
+                        alert('Some files had errors: ' + data.errors.join(', '));
+                    }
+                } else {
+                    alert(data.detail || 'Error uploading files');
+                }
+            } catch (err) {
+                alert('Error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Upload & Transcribe';
+            }
+        }
         
         function connectSSE() {
             eventSource = new EventSource('/api/events');
@@ -909,7 +1367,7 @@ def get_html_template() -> str:
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                         </svg>
-                        <p>No transcription jobs yet.<br>Paste some YouTube URLs above to get started!</p>
+                        <p>No transcription jobs yet.<br>Add YouTube URLs or upload files to get started!</p>
                     </div>
                 `;
                 return;
@@ -919,7 +1377,10 @@ def get_html_template() -> str:
                 <div class="job-card ${getStatusClass(job.status)}">
                     <div class="job-header">
                         <div class="job-title">${job.title || 'Loading...'}</div>
-                        <span class="job-status status-${job.status}">${job.status}</span>
+                        <div class="job-badges">
+                            <span class="job-source source-${job.source_type || 'youtube'}">${job.source_type || 'youtube'}</span>
+                            <span class="job-status status-${job.status}">${job.status}</span>
+                        </div>
                     </div>
                     <div class="job-url">${job.url}</div>
                     <div class="progress-bar">
@@ -1016,14 +1477,12 @@ def get_html_template() -> str:
             }
         }
         
-        // Handle Enter key in textarea
         document.getElementById('urlInput').addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && e.ctrlKey) {
                 submitUrls();
             }
         });
         
-        // Connect on load
         connectSSE();
     </script>
 </body>

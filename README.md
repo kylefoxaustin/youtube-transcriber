@@ -1,10 +1,10 @@
-# YouTube Transcriber 🎬
+# Media Transcriber 🎬
 
-Local AI-powered YouTube transcription using faster-whisper. Runs entirely on your hardware with GPU acceleration.
+Local AI-powered transcription for YouTube videos and local media files. Runs entirely on your hardware with GPU acceleration.
 
 **Two ways to use it:**
 - **CLI** - Quick command-line transcription
-- **Web UI** - Paste URLs, watch progress, download results
+- **Web UI** - Paste URLs or upload files, watch progress, download results
 
 ---
 
@@ -12,12 +12,24 @@ Local AI-powered YouTube transcription using faster-whisper. Runs entirely on yo
 
 - 🚀 **GPU Accelerated** - CUDA support via faster-whisper (CTranslate2)
 - 🎯 **High Accuracy** - Whisper large-v3 model with word-level timestamps
-- 🗣️ **Speaker Diarization** - Identify who said what (optional, via whisperX)
-- 📁 **Multiple Formats** - SRT, VTT, TXT, JSON output
-- 🔄 **Batch Processing** - Process playlists, channels, or URL lists
-- 🌐 **Web Interface** - Real-time progress with Docker deployment
-- 💾 **Resume Support** - Skip already-processed videos
+- 📺 **YouTube Support** - Videos, playlists, and channels
+- 📁 **Local Files** - MP4, MKV, MOV, MP3, WAV, and many more formats
+- 🗣️ **Speaker Diarization** - Identify who said what (optional)
+- 📊 **Multiple Formats** - SRT, VTT, TXT, JSON output
+- 🔄 **Batch Processing** - Process folders, playlists, or URL lists
+- 🌐 **Web Interface** - Drag-and-drop uploads with real-time progress
+- 💾 **Resume Support** - Skip already-processed files
 - 🏠 **Fully Local** - No cloud APIs, everything on your machine
+
+---
+
+## Supported Formats
+
+**Video:** MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, MPEG, MPG, 3GP
+
+**Audio:** MP3, WAV, M4A, AAC, OGG, FLAC, WMA, Opus
+
+Basically, if ffmpeg can read it, we can transcribe it!
 
 ---
 
@@ -37,22 +49,28 @@ Local AI-powered YouTube transcription using faster-whisper. Runs entirely on yo
 
 ```bash
 # Clone
-git clone https://github.com/kylefoxaustin/youtube-transcriber.git
+git clone https://github.com/kylefox1/youtube-transcriber.git
 cd youtube-transcriber
 
 # Setup
 bash setup.sh
 source venv/bin/activate
 
-# Transcribe!
+# Transcribe YouTube video
 python transcribe.py https://www.youtube.com/watch?v=VIDEO_ID
+
+# Transcribe local file
+python transcribe.py /path/to/video.mp4
+
+# Transcribe folder of videos
+python transcribe.py --folder /path/to/videos/
 ```
 
 ### Option B: Docker Web UI
 
 ```bash
 # Clone
-git clone https://github.com/kylefoxaustin/youtube-transcriber.git
+git clone https://github.com/kylefox1/youtube-transcriber.git
 cd youtube-transcriber
 
 # Start
@@ -68,17 +86,32 @@ docker compose up -d
 ### Basic Commands
 
 ```bash
-# Single video
+# YouTube video
 python transcribe.py https://www.youtube.com/watch?v=VIDEO_ID
 
-# Multiple videos
-python transcribe.py URL1 URL2 URL3
+# Local video file
+python transcribe.py /path/to/video.mp4
 
-# From a file (one URL per line)
-python transcribe.py --file urls.txt
+# Local audio file  
+python transcribe.py /path/to/podcast.mp3
 
-# Entire playlist
+# Multiple files
+python transcribe.py video1.mp4 video2.mov audio.mp3
+
+# Mix of URLs and local files
+python transcribe.py https://youtube.com/watch?v=xxx video.mp4
+
+# From a text file (URLs or paths, one per line)
+python transcribe.py --file inputs.txt
+
+# YouTube playlist
 python transcribe.py --playlist "https://www.youtube.com/playlist?list=PLxxxxx"
+
+# Folder of media files
+python transcribe.py --folder /path/to/videos/
+
+# Folder recursive (include subfolders)
+python transcribe.py --folder /path/to/videos/ --recursive
 ```
 
 ### Model Selection
@@ -93,23 +126,23 @@ python transcribe.py --playlist "https://www.youtube.com/playlist?list=PLxxxxx"
 
 ```bash
 # Use a smaller/faster model
-python transcribe.py --model medium URL
+python transcribe.py --model medium video.mp4
 
 # Use CPU (slower but no GPU needed)
-python transcribe.py --device cpu --model small URL
+python transcribe.py --device cpu --model small video.mp4
 ```
 
 ### Speaker Diarization
 
-Identify who said what in multi-speaker videos:
+Identify who said what in multi-speaker content:
 
 ```bash
 # Requires HuggingFace token
 export HF_TOKEN='your_token'
-python transcribe.py --diarize URL
+python transcribe.py --diarize video.mp4
 
 # Specify expected speakers
-python transcribe.py --diarize --min-speakers 2 --max-speakers 4 URL
+python transcribe.py --diarize --min-speakers 2 --max-speakers 4 video.mp4
 ```
 
 To enable diarization:
@@ -133,9 +166,11 @@ Options:
   --min-speakers     Min speakers for diarization
   --max-speakers     Max speakers for diarization
   --no-word-timestamps  Disable word-level timestamps
-  --no-skip          Re-process already transcribed videos
-  --keep-audio       Keep downloaded audio files
-  --file, -f         File containing URLs
+  --no-skip          Re-process already transcribed files
+  --keep-audio       Keep extracted audio files
+  --file, -f         File containing URLs/paths (one per line)
+  --folder           Folder containing media files
+  --recursive, -r    Process folders recursively
   --playlist, -p     YouTube playlist URL
 ```
 
@@ -175,10 +210,16 @@ Open **http://localhost:8000** in your browser.
 
 ### Using the Web Interface
 
+**YouTube Tab:**
 1. Paste YouTube URLs (one per line) into the text box
 2. Click "Start Transcription"
-3. Watch real-time progress for each video
-4. Download results (SRT/VTT/TXT/JSON) when complete
+
+**Upload Tab:**
+1. Drag & drop files or click to browse
+2. Select video/audio files from your computer
+3. Click "Upload & Transcribe"
+
+Both methods show real-time progress and let you download results when complete.
 
 ### Management Script
 
@@ -213,10 +254,15 @@ COMPUTE_TYPE=float16
 The web UI exposes a REST API:
 
 ```bash
-# Submit URLs
+# Submit YouTube URLs
 curl -X POST http://localhost:8000/api/submit \
   -H "Content-Type: application/json" \
   -d '{"urls": "https://www.youtube.com/watch?v=VIDEO_ID"}'
+
+# Upload local files
+curl -X POST http://localhost:8000/api/upload \
+  -F "files=@video.mp4" \
+  -F "files=@audio.mp3"
 
 # List all jobs
 curl http://localhost:8000/api/jobs
@@ -227,14 +273,11 @@ curl http://localhost:8000/api/jobs/{job_id}
 # Download transcript
 curl http://localhost:8000/api/files/{video_id}/filename.txt
 
+# Get supported formats
+curl http://localhost:8000/api/formats
+
 # Health check
 curl http://localhost:8000/health
-```
-
-Real-time updates via Server-Sent Events:
-```javascript
-const events = new EventSource('/api/events');
-events.onmessage = (e) => console.log(JSON.parse(e.data));
 ```
 
 ---
@@ -245,8 +288,8 @@ events.onmessage = (e) => console.log(JSON.parse(e.data));
 output/
 ├── audio/                          # Temp audio (deleted after processing)
 └── transcripts/
-    └── VIDEO_ID/
-        ├── metadata.json           # Video info + settings
+    └── MEDIA_ID/
+        ├── metadata.json           # File info + settings
         ├── Video_Title.srt         # SubRip subtitles
         ├── Video_Title.vtt         # WebVTT subtitles
         ├── Video_Title.txt         # Plain text + timestamps
@@ -262,13 +305,13 @@ output/
 Hello and welcome to today's video.
 ```
 
-**VTT** - Web-friendly subtitles with speaker tags:
+**VTT** - Web-friendly subtitles:
 ```
 WEBVTT
 
 1
 00:00:00.000 --> 00:00:04.500
-<v Speaker1>Hello and welcome to today's video.
+Hello and welcome to today's video.
 ```
 
 **TXT** - Readable plain text:
@@ -306,7 +349,7 @@ source venv/bin/activate
 # Install packages
 pip install faster-whisper yt-dlp
 
-# For web UI (optional)
+# For web UI
 pip install fastapi uvicorn python-multipart
 
 # For diarization (optional)
@@ -359,8 +402,8 @@ sudo systemctl restart docker
 ### "CUDA out of memory"
 Use a smaller model or int8 quantization:
 ```bash
-python transcribe.py --model medium URL
-python transcribe.py --compute-type int8 URL
+python transcribe.py --model medium video.mp4
+python transcribe.py --compute-type int8 video.mp4
 ```
 
 ### "ffmpeg not found"
@@ -386,13 +429,26 @@ sudo apt install deno
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
+### Uploaded files not processing
+Check that the uploads directory has proper permissions:
+```bash
+docker compose exec transcriber ls -la /app/uploads
+```
+
 ---
 
 ## Tips & Tricks
 
+### Transcribe Google Photos videos
+1. Download videos from Google Photos (or use Google Takeout for bulk export)
+2. Either upload via web UI or use CLI:
+```bash
+python transcribe.py --folder ~/Downloads/google-photos-export/
+```
+
 ### Process overnight
 ```bash
-nohup python transcribe.py --file urls.txt > log.txt 2>&1 &
+nohup python transcribe.py --folder ~/Videos/ > log.txt 2>&1 &
 tail -f transcription.log
 ```
 
@@ -411,7 +467,7 @@ yt-dlp --flat-playlist --print url \
 
 ## Author
 
-**Kyle Fox** - [GitHub](https://github.com/kylefoxaustin)
+**Kyle Fox** - [GitHub](https://github.com/kylefox1)
 
 ## License
 

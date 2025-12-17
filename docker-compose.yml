@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   transcriber:
     build:
@@ -24,6 +22,8 @@ services:
     volumes:
       # Output transcripts persist on host
       - ./output:/app/output
+      # Uploaded files
+      - ./uploads:/app/uploads
       # Cache Whisper models (avoid re-downloading)
       - whisper-cache:/home/transcriber/.cache
     
@@ -34,12 +34,11 @@ services:
       - COMPUTE_TYPE=${COMPUTE_TYPE:-float16}
       - HF_TOKEN=${HF_TOKEN:-}
       - NVIDIA_VISIBLE_DEVICES=all
+      - OUTPUT_DIR=/app/output
+      - UPLOAD_DIR=/app/uploads
     
     # Restart policy
     restart: unless-stopped
-    
-    # Resource limits (optional - adjust based on your system)
-    # shm_size: '8gb'  # Increase if you see shared memory errors
 
 volumes:
   whisper-cache:

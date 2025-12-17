@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YouTube Video Transcriber
+YouTube & Local Video Transcriber
 A comprehensive local transcription pipeline using faster-whisper and whisperX.
 
 Features:
@@ -8,16 +8,20 @@ Features:
 - Speaker diarization (who said what)
 - Word-level timestamps
 - Multiple output formats (SRT, VTT, TXT, JSON, TSV)
-- Batch processing from URLs or playlists
+- YouTube videos, playlists, and channels
+- Local video/audio file support
+- Folder batch processing
 - Resume capability (skip already processed)
 - Organized output structure
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -64,6 +68,11 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Supported media extensions
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpeg', '.mpg', '.3gp'}
+AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.wma', '.opus'}
+SUPPORTED_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
 
 class TranscriptionConfig:
@@ -116,8 +125,8 @@ class TranscriptionConfig:
             self.diarize = False
 
 
-class YouTubeTranscriber:
-    """Main transcription pipeline."""
+class MediaTranscriber:
+    """Main transcription pipeline for YouTube and local files."""
     
     def __init__(self, config: TranscriptionConfig):
         self.config = config
@@ -148,6 +157,44 @@ class YouTubeTranscriber:
                 use_auth_token=self.config.hf_token,
                 device=self.config.device
             )
+    
+    def _generate_file_id(self, filepath: Path) -> str:
+        """Generate a unique ID for a local file based on name and size."""
+        stat = filepath.stat()
+        hash_input = f"{filepath.name}_{stat.st_size}_{stat.st_mtime}"
+        return hashlib.md5(hash_input.encode()).hexdigest()[:12]
+    
+    def _extract_audio_from_video(self, video_path: Path) -> Path:
+        """Extract audio from video file using ffmpeg."""
+        audio_dir = self.config.output_dir / "audio"
+        audio_path = audio_dir / f"{video_path.stem}.{self.config.audio_format}"
+        
+        logger.info(f"Extracting audio from: {video_path.name}")
+        
+        cmd = [
+            'ffmpeg', '-y', '-i', str(video_path),
+            '-vn', '-acodec', 'pcm_s16le' if self.config.audio_format == 'wav' else 'libmp3lame',
+            '-ar', '16000', '-ac', '1',
+            str(audio_path)
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed: {result.stderr}")
+        
+        return audio_path
+    
+    def _is_audio_file(self, filepath: Path) -> bool:
+        """Check if file is an audio file that can be transcribed directly."""
+        return filepath.suffix.lower() in AUDIO_EXTENSIONS
+    
+    def _is_video_file(self, filepath: Path) -> bool:
+        """Check if file is a video file."""
+        return filepath.suffix.lower() in VIDEO_EXTENSIONS
+    
+    def _is_supported_file(self, filepath: Path) -> bool:
+        """Check if file is a supported media file."""
+        return filepath.suffix.lower() in SUPPORTED_EXTENSIONS
     
     def download_video(self, url: str) -> Optional[dict]:
         """Download video and extract audio."""
@@ -194,6 +241,7 @@ class YouTubeTranscriber:
                     'safe_title': safe_title,
                     'audio_path': audio_path,
                     'url': url,
+                    'source_type': 'youtube',
                     'duration': info.get('duration'),
                     'upload_date': info.get('upload_date'),
                     'channel': info.get('channel'),
@@ -203,6 +251,54 @@ class YouTubeTranscriber:
         except Exception as e:
             logger.error(f"Failed to download {url}: {e}")
             return None
+    
+    def prepare_local_file(self, filepath: Path) -> Optional[dict]:
+        """Prepare a local file for transcription."""
+        filepath = Path(filepath).resolve()
+        
+        if not filepath.exists():
+            logger.error(f"File not found: {filepath}")
+            return None
+        
+        if not self._is_supported_file(filepath):
+            logger.error(f"Unsupported file type: {filepath.suffix}")
+            logger.info(f"Supported formats: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+            return None
+        
+        # Generate file ID and title
+        file_id = self._generate_file_id(filepath)
+        title = filepath.stem
+        safe_title = re.sub(r'[<>:"/\\|?*]', '_', title)[:100]
+        
+        # Check if already processed
+        transcript_dir = self.config.output_dir / "transcripts" / file_id
+        if self.config.skip_existing and transcript_dir.exists():
+            logger.info(f"Skipping (already processed): {title}")
+            return None
+        
+        # Determine audio path
+        if self._is_audio_file(filepath):
+            # Audio file - can transcribe directly, but copy to working dir for consistency
+            audio_dir = self.config.output_dir / "audio"
+            audio_path = audio_dir / f"{file_id}.{filepath.suffix.lstrip('.')}"
+            shutil.copy2(filepath, audio_path)
+        else:
+            # Video file - need to extract audio
+            audio_path = self._extract_audio_from_video(filepath)
+            # Rename to use file_id
+            new_audio_path = audio_path.parent / f"{file_id}.{self.config.audio_format}"
+            audio_path.rename(new_audio_path)
+            audio_path = new_audio_path
+        
+        return {
+            'id': file_id,
+            'title': title,
+            'safe_title': safe_title,
+            'audio_path': audio_path,
+            'source_path': str(filepath),
+            'source_type': 'local',
+            'duration': None,  # Will be filled during transcription
+        }
     
     def transcribe(self, audio_path: Path, language: Optional[str] = None) -> dict:
         """Transcribe audio file."""
@@ -320,23 +416,24 @@ class YouTubeTranscriber:
         else:  # vtt
             return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
     
-    def save_outputs(self, video_info: dict, transcript: dict):
+    def save_outputs(self, media_info: dict, transcript: dict):
         """Save transcript in all requested formats."""
-        video_id = video_info['id']
-        safe_title = video_info['safe_title']
+        media_id = media_info['id']
+        safe_title = media_info['safe_title']
         
-        # Create video-specific directory
-        output_dir = self.config.output_dir / "transcripts" / video_id
+        # Create media-specific directory
+        output_dir = self.config.output_dir / "transcripts" / media_id
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Save metadata
         metadata = {
-            'video_id': video_id,
-            'title': video_info['title'],
-            'url': video_info['url'],
-            'channel': video_info.get('channel'),
-            'duration': video_info.get('duration'),
-            'upload_date': video_info.get('upload_date'),
+            'id': media_id,
+            'title': media_info['title'],
+            'source_type': media_info.get('source_type', 'unknown'),
+            'source_path': media_info.get('source_path') or media_info.get('url'),
+            'channel': media_info.get('channel'),
+            'duration': transcript.get('duration') or media_info.get('duration'),
+            'upload_date': media_info.get('upload_date'),
             'transcribed_at': datetime.now().isoformat(),
             'language': transcript['language'],
             'language_probability': transcript['language_probability'],
@@ -416,9 +513,8 @@ class YouTubeTranscriber:
                 text = seg['text'].replace('\t', ' ').replace('\n', ' ')
                 f.write(f"{seg['start']:.3f}\t{seg['end']:.3f}\t{speaker}\t{text}\n")
     
-    def process_video(self, url: str) -> bool:
-        """Process a single video URL."""
-        # Download
+    def process_youtube(self, url: str) -> bool:
+        """Process a single YouTube video URL."""
         video_info = self.download_video(url)
         if video_info is None:
             return False
@@ -426,25 +522,89 @@ class YouTubeTranscriber:
         audio_path = video_info['audio_path']
         
         try:
-            # Transcribe
             transcript = self.transcribe(audio_path)
-            
-            # Diarize if enabled
             transcript = self.diarize_transcript(audio_path, transcript)
-            
-            # Save outputs
             self.save_outputs(video_info, transcript)
-            
             logger.info(f"✓ Completed: {video_info['title']}")
             return True
-            
         finally:
-            # Cleanup audio if not keeping
             if not self.config.keep_audio and audio_path.exists():
                 audio_path.unlink()
     
+    def process_local_file(self, filepath: Path) -> bool:
+        """Process a single local media file."""
+        file_info = self.prepare_local_file(filepath)
+        if file_info is None:
+            return False
+        
+        audio_path = file_info['audio_path']
+        
+        try:
+            transcript = self.transcribe(audio_path)
+            transcript = self.diarize_transcript(audio_path, transcript)
+            self.save_outputs(file_info, transcript)
+            logger.info(f"✓ Completed: {file_info['title']}")
+            return True
+        finally:
+            if not self.config.keep_audio and audio_path.exists():
+                audio_path.unlink()
+    
+    def process_folder(self, folder_path: Path, recursive: bool = False):
+        """Process all media files in a folder."""
+        folder_path = Path(folder_path).resolve()
+        
+        if not folder_path.exists():
+            logger.error(f"Folder not found: {folder_path}")
+            return
+        
+        if not folder_path.is_dir():
+            logger.error(f"Not a folder: {folder_path}")
+            return
+        
+        # Find all media files
+        if recursive:
+            files = [f for f in folder_path.rglob('*') if f.is_file() and self._is_supported_file(f)]
+        else:
+            files = [f for f in folder_path.iterdir() if f.is_file() and self._is_supported_file(f)]
+        
+        if not files:
+            logger.warning(f"No supported media files found in: {folder_path}")
+            logger.info(f"Supported formats: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+            return
+        
+        files.sort()
+        logger.info(f"Found {len(files)} media files")
+        
+        self.process_files(files)
+    
+    def process_files(self, files: list):
+        """Process multiple local files."""
+        if not self.model:
+            self.load_models()
+        
+        total = len(files)
+        success = 0
+        failed = []
+        
+        for i, filepath in enumerate(files, 1):
+            logger.info(f"\n[{i}/{total}] Processing: {filepath}")
+            try:
+                if self.process_local_file(filepath):
+                    success += 1
+            except Exception as e:
+                logger.error(f"Failed: {e}")
+                failed.append(str(filepath))
+        
+        # Summary
+        logger.info(f"\n{'='*50}")
+        logger.info(f"Completed: {success}/{total}")
+        if failed:
+            logger.info(f"Failed files:")
+            for f in failed:
+                logger.info(f"  - {f}")
+    
     def process_urls(self, urls: list):
-        """Process multiple URLs."""
+        """Process multiple YouTube URLs."""
         if not self.model:
             self.load_models()
         
@@ -455,7 +615,7 @@ class YouTubeTranscriber:
         for i, url in enumerate(urls, 1):
             logger.info(f"\n[{i}/{total}] Processing: {url}")
             try:
-                if self.process_video(url):
+                if self.process_youtube(url):
                     success += 1
             except Exception as e:
                 logger.error(f"Failed: {e}")
@@ -493,50 +653,90 @@ class YouTubeTranscriber:
             
             logger.info(f"Found {len(urls)} videos in playlist")
             self.process_urls(urls)
+    
+    def process_input(self, input_path: str) -> bool:
+        """Smart processing - detect if input is URL, file, or folder."""
+        # Check if it's a URL
+        if input_path.startswith(('http://', 'https://', 'www.')):
+            return self.process_youtube(input_path)
+        
+        # Check if it's a local path
+        path = Path(input_path)
+        if path.exists():
+            if path.is_dir():
+                self.process_folder(path)
+                return True
+            elif path.is_file():
+                return self.process_local_file(path)
+        
+        logger.error(f"Invalid input: {input_path}")
+        logger.info("Expected: YouTube URL, local file path, or folder path")
+        return False
 
 
 def load_urls_from_file(filepath: str) -> list:
-    """Load URLs from a text file (one per line)."""
-    urls = []
+    """Load URLs or file paths from a text file (one per line)."""
+    items = []
     with open(filepath, 'r') as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith('#'):
-                urls.append(line)
-    return urls
+                items.append(line)
+    return items
+
+
+def is_url(s: str) -> bool:
+    """Check if string is a URL."""
+    return s.startswith(('http://', 'https://', 'www.'))
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Transcribe YouTube videos locally using Whisper",
+        description="Transcribe YouTube videos or local media files using Whisper",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single video
+  # YouTube video
   python transcribe.py https://www.youtube.com/watch?v=VIDEO_ID
 
-  # Multiple videos
-  python transcribe.py URL1 URL2 URL3
+  # Local video file
+  python transcribe.py /path/to/video.mp4
 
-  # From file (one URL per line)
-  python transcribe.py --file urls.txt
+  # Local audio file
+  python transcribe.py /path/to/audio.mp3
 
-  # Playlist
+  # Folder of media files
+  python transcribe.py --folder /path/to/videos/
+
+  # Folder recursive
+  python transcribe.py --folder /path/to/videos/ --recursive
+
+  # Multiple inputs (mixed URLs and files)
+  python transcribe.py video.mp4 https://youtube.com/watch?v=xxx audio.mp3
+
+  # From file (URLs or file paths, one per line)
+  python transcribe.py --file inputs.txt
+
+  # YouTube playlist
   python transcribe.py --playlist https://www.youtube.com/playlist?list=PLAYLIST_ID
 
-  # With speaker diarization (requires HF_TOKEN)
+  # With speaker diarization
   export HF_TOKEN='your_token'
-  python transcribe.py --diarize https://www.youtube.com/watch?v=VIDEO_ID
+  python transcribe.py --diarize video.mp4
 
-  # Custom model and output
-  python transcribe.py --model medium --output ./my_transcripts URL
+Supported formats:
+  Video: mp4, mkv, avi, mov, wmv, flv, webm, m4v, mpeg, mpg, 3gp
+  Audio: mp3, wav, m4a, aac, ogg, flac, wma, opus
         """
     )
     
     # Input options
-    parser.add_argument('urls', nargs='*', help='YouTube video URLs')
-    parser.add_argument('--file', '-f', help='File containing URLs (one per line)')
+    parser.add_argument('inputs', nargs='*', help='YouTube URLs or local file paths')
+    parser.add_argument('--file', '-f', help='File containing URLs or paths (one per line)')
     parser.add_argument('--playlist', '-p', help='YouTube playlist URL')
+    parser.add_argument('--folder', help='Folder containing media files to transcribe')
+    parser.add_argument('--recursive', '-r', action='store_true',
+                        help='Process folders recursively')
     
     # Model options
     parser.add_argument('--model', '-m', default='large-v3',
@@ -570,21 +770,21 @@ Examples:
     
     # Processing options
     parser.add_argument('--no-skip', action='store_true',
-                        help='Re-process already transcribed videos')
+                        help='Re-process already transcribed files')
     parser.add_argument('--keep-audio', action='store_true',
-                        help='Keep downloaded audio files')
+                        help='Keep extracted audio files')
     
     args = parser.parse_args()
     
-    # Collect URLs
-    urls = list(args.urls) if args.urls else []
+    # Collect inputs
+    inputs = list(args.inputs) if args.inputs else []
     
     if args.file:
-        urls.extend(load_urls_from_file(args.file))
+        inputs.extend(load_urls_from_file(args.file))
     
-    if not urls and not args.playlist:
+    if not inputs and not args.playlist and not args.folder:
         parser.print_help()
-        print("\nError: No URLs provided. Use positional args, --file, or --playlist")
+        print("\nError: No inputs provided. Use positional args, --file, --folder, or --playlist")
         sys.exit(1)
     
     # Create config
@@ -604,13 +804,31 @@ Examples:
     )
     
     # Create transcriber and process
-    transcriber = YouTubeTranscriber(config)
+    transcriber = MediaTranscriber(config)
     
+    # Load models once
+    if inputs or args.playlist or args.folder:
+        transcriber.load_models()
+    
+    # Process playlist
     if args.playlist:
         transcriber.process_playlist(args.playlist)
     
-    if urls:
-        transcriber.process_urls(urls)
+    # Process folder
+    if args.folder:
+        transcriber.process_folder(Path(args.folder), recursive=args.recursive)
+    
+    # Process individual inputs (URLs and local files)
+    if inputs:
+        # Separate URLs from local files
+        urls = [i for i in inputs if is_url(i)]
+        files = [Path(i) for i in inputs if not is_url(i)]
+        
+        if urls:
+            transcriber.process_urls(urls)
+        
+        if files:
+            transcriber.process_files(files)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
-# YouTube Transcriber with GPU Support
+# YouTube & Local Media Transcriber with GPU Support
 # Based on NVIDIA CUDA image with cuDNN
 
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 LABEL maintainer="Kyle Fox"
-LABEL description="Local YouTube transcription with faster-whisper and web UI"
+LABEL description="Local YouTube and media transcription with faster-whisper and web UI"
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -28,8 +28,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Create non-root user for security
 RUN useradd -m -u 1000 transcriber
-RUN mkdir -p /app/output /app/models && chown -R transcriber:transcriber /app
-RUN mkdir -p /app/output /app/models /home/transcriber/.cache && chown -R transcriber:transcriber /app /home/transcriber/.cache
+
+# Create directories with proper permissions
+RUN mkdir -p /app/output /app/uploads /home/transcriber/.cache \
+    && chown -R transcriber:transcriber /app /home/transcriber/.cache
 
 # Switch to non-root user
 USER transcriber
@@ -45,10 +47,6 @@ RUN pip install --user --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY --chown=transcriber:transcriber . .
 
-# Pre-download the Whisper model (optional - comment out to download on first run)
-# This makes the container larger but startup faster
-# RUN python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu')"
-
 # Expose web UI port
 EXPOSE 8000
 
@@ -61,6 +59,7 @@ ENV MODEL_SIZE=large-v3
 ENV DEVICE=cuda
 ENV COMPUTE_TYPE=float16
 ENV OUTPUT_DIR=/app/output
+ENV UPLOAD_DIR=/app/uploads
 
 # Run the web server
 CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
