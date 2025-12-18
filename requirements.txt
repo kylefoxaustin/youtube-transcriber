@@ -8,6 +8,11 @@ uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 pydantic>=2.0.0
 
-# Optional: Speaker diarization
+# Speaker Identification (v1.1.0)
+speechbrain>=1.0.0
+torchaudio>=2.0.0
+numpy>=1.24.0
+
+# Optional: Speaker diarization (identifies speakers but doesn't match to profiles)
 # Uncomment to enable (also requires HF_TOKEN)
 # whisperx @ git+https://github.com/m-bain/whisperx.git

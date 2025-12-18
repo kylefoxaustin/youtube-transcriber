@@ -2,9 +2,7 @@
 
 Local AI-powered transcription for YouTube videos and local media files. Runs entirely on your hardware with GPU acceleration.
 
-**Two ways to use it:**
-- **CLI** - Quick command-line transcription
-- **Web UI** - Paste URLs or upload files, watch progress, download results
+**v1.1.0 NEW: Speaker Identification** — Create a voice profile and extract only YOUR voice from videos!
 
 ---
 
@@ -14,6 +12,7 @@ Local AI-powered transcription for YouTube videos and local media files. Runs en
 - 🎯 **High Accuracy** - Whisper large-v3 model with word-level timestamps
 - 📺 **YouTube Support** - Videos, playlists, and channels
 - 📁 **Local Files** - MP4, MKV, MOV, MP3, WAV, and many more formats
+- 🎤 **Speaker Identification** - Extract only YOUR voice from multi-speaker videos *(NEW in v1.1.0)*
 - 🗣️ **Speaker Diarization** - Identify who said what (optional)
 - 📊 **Multiple Formats** - SRT, VTT, TXT, JSON output
 - 🔄 **Batch Processing** - Process folders, playlists, or URL lists
@@ -23,67 +22,125 @@ Local AI-powered transcription for YouTube videos and local media files. Runs en
 
 ---
 
-## Supported Formats
+## What's New in v1.1.0 🎤
 
-**Video:** MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, MPEG, MPG, 3GP
+**Speaker Identification** lets you:
+- Create a "voice profile" from a sample of you speaking
+- Automatically find and extract YOUR segments from any video
+- Perfect for pulling your voice out of family videos, meetings, podcasts
 
-**Audio:** MP3, WAV, M4A, AAC, OGG, FLAC, WMA, Opus
+```bash
+# One-time: Create your voice profile
+python voice_profile.py create kyle ~/Videos/me_talking.mp4
 
-Basically, if ffmpeg can read it, we can transcribe it!
+# Extract your voice from any video
+python extract_speaker.py kyle family_reunion.mp4
 
----
-
-## Requirements
-
-- Python 3.10+
-- NVIDIA GPU with CUDA support (or CPU fallback)
-- ~10GB disk space for large-v3 model
-- ffmpeg
-- Docker (optional, for web UI)
+# Output: Just your text, SRT subtitles, or audio-only file
+```
 
 ---
 
 ## Quick Start
 
-### Option A: Command Line
+### Option A: Docker Web UI
 
 ```bash
-# Clone
-git clone https://github.com/kylefox1/youtube-transcriber.git
-cd youtube-transcriber
+git clone https://github.com/kylefoxaustin/media-transcriber.git
+cd media-transcriber
+docker compose up -d
+# Open http://localhost:8000
+```
 
-# Setup
+### Option B: Command Line
+
+```bash
+git clone https://github.com/kylefoxaustin/media-transcriber.git
+cd media-transcriber
 bash setup.sh
 source venv/bin/activate
 
-# Transcribe YouTube video
+# Transcribe
 python transcribe.py https://www.youtube.com/watch?v=VIDEO_ID
-
-# Transcribe local file
 python transcribe.py /path/to/video.mp4
-
-# Transcribe folder of videos
-python transcribe.py --folder /path/to/videos/
-```
-
-### Option B: Docker Web UI
-
-```bash
-# Clone
-git clone https://github.com/kylefox1/youtube-transcriber.git
-cd youtube-transcriber
-
-# Start
-docker compose up -d
-
-# Open http://localhost:8000
 ```
 
 ---
 
-## CLI Usage
+## Speaker Identification (v1.1.0)
 
-### Basic Commands
+### Step 1: Create Your Voice Profile
+
+You need a sample where **only you** are speaking (30-60 seconds is ideal):
+
+```bash
+# From a video file
+python voice_profile.py create kyle ~/Videos/me_presenting.mp4
+
+# From a specific time range (you at 0:30-1:30)
+python voice_profile.py create kyle video.mp4 --start 30 --end 90
+
+# From an audio file
+python voice_profile.py create kyle my_voice_memo.m4a
+```
+
+### Step 2: Extract Your Voice from Any Video
+
+```bash
+# Extract your segments (outputs text, SRT, audio, JSON)
+python extract_speaker.py kyle family_video.mp4
+
+# Just get the text
+python extract_speaker.py kyle video.mp4 --output-text
+
+# Just get subtitles of your parts
+python extract_speaker.py kyle video.mp4 --output-srt
+
+# Just get audio of you speaking
+python extract_speaker.py kyle video.mp4 --output-audio
+
+# Lower threshold = more matches (may include false positives)
+python extract_speaker.py kyle video.mp4 --threshold 0.5
+```
+
+### Voice Profile Management
+
+```bash
+# List all profiles
+python voice_profile.py list
+
+# Test if a file matches your voice
+python voice_profile.py test kyle unknown_video.mp4
+
+# Delete a profile
+python voice_profile.py delete kyle
+
+# View profile details
+python voice_profile.py info kyle
+```
+
+### How It Works
+
+1. **Voice Embedding**: Uses SpeechBrain's ECAPA-TDNN model to create a 192-dimensional "voiceprint" from your sample
+2. **Transcription**: Whisper transcribes the target video into segments
+3. **Matching**: Each segment's audio is compared to your voiceprint using cosine similarity
+4. **Extraction**: Segments above the threshold (default 0.6) are extracted
+
+### Tips for Best Results
+
+- **Good samples**: Clear audio, just your voice, minimal background noise
+- **30-60 seconds**: Enough to capture your voice characteristics
+- **Multiple samples**: You can add more samples to improve accuracy:
+  ```bash
+  python voice_profile.py create kyle sample1.wav sample2.wav sample3.wav
+  ```
+- **Threshold tuning**: Start at 0.6, lower to 0.5 if missing segments, raise to 0.7 if getting false positives
+
+---
+
+## Basic Transcription
+
+### CLI Usage
 
 ```bash
 # YouTube video
@@ -97,9 +154,6 @@ python transcribe.py /path/to/podcast.mp3
 
 # Multiple files
 python transcribe.py video1.mp4 video2.mov audio.mp3
-
-# Mix of URLs and local files
-python transcribe.py https://youtube.com/watch?v=xxx video.mp4
 
 # From a text file (URLs or paths, one per line)
 python transcribe.py --file inputs.txt
@@ -132,63 +186,6 @@ python transcribe.py --model medium video.mp4
 python transcribe.py --device cpu --model small video.mp4
 ```
 
-### Speaker Diarization
-
-Identify who said what in multi-speaker content:
-
-```bash
-# Requires HuggingFace token
-export HF_TOKEN='your_token'
-python transcribe.py --diarize video.mp4
-
-# Specify expected speakers
-python transcribe.py --diarize --min-speakers 2 --max-speakers 4 video.mp4
-```
-
-To enable diarization:
-1. Install whisperX: `pip install git+https://github.com/m-bain/whisperx.git`
-2. Get a token at https://huggingface.co/settings/tokens
-3. Accept model terms at https://huggingface.co/pyannote/speaker-diarization-3.1
-
-### All CLI Options
-
-```bash
-python transcribe.py --help
-
-Options:
-  --model, -m        Model size (tiny/base/small/medium/large-v2/large-v3)
-  --device           cuda or cpu
-  --compute-type     float16, float32, or int8
-  --language, -l     Force language (auto-detect if not set)
-  --output, -o       Output directory (default: ./output)
-  --formats          Output formats (srt vtt txt json tsv)
-  --diarize, -d      Enable speaker diarization
-  --min-speakers     Min speakers for diarization
-  --max-speakers     Max speakers for diarization
-  --no-word-timestamps  Disable word-level timestamps
-  --no-skip          Re-process already transcribed files
-  --keep-audio       Keep extracted audio files
-  --file, -f         File containing URLs/paths (one per line)
-  --folder           Folder containing media files
-  --recursive, -r    Process folders recursively
-  --playlist, -p     YouTube playlist URL
-```
-
-### Extract URLs Helper
-
-Grab all video URLs from a channel before transcribing:
-
-```bash
-# Extract from channel
-python extract_urls.py "https://www.youtube.com/@ChannelName/videos" -o urls.txt
-
-# Extract from playlist
-python extract_urls.py "https://www.youtube.com/playlist?list=PLxxx" -o urls.txt
-
-# Then transcribe
-python transcribe.py --file urls.txt
-```
-
 ---
 
 ## Docker Web UI
@@ -196,88 +193,22 @@ python transcribe.py --file urls.txt
 ### Starting the Service
 
 ```bash
-# Build and start
 docker compose up -d
-
-# Check status
-docker compose ps
-
-# View logs
-docker compose logs -f
+# Open http://localhost:8000
 ```
 
-Open **http://localhost:8000** in your browser.
+### Features
+- **YouTube Tab**: Paste URLs, watch real-time progress
+- **Upload Tab**: Drag-and-drop local files
+- Download results in SRT, VTT, TXT, JSON formats
 
-### Using the Web Interface
-
-**YouTube Tab:**
-1. Paste YouTube URLs (one per line) into the text box
-2. Click "Start Transcription"
-
-**Upload Tab:**
-1. Drag & drop files or click to browse
-2. Select video/audio files from your computer
-3. Click "Upload & Transcribe"
-
-Both methods show real-time progress and let you download results when complete.
-
-### Management Script
+### Management
 
 ```bash
 ./manage.sh start    # Start container
 ./manage.sh stop     # Stop container
-./manage.sh restart  # Restart container
 ./manage.sh logs     # View live logs
 ./manage.sh gpu      # Verify GPU access
-./manage.sh status   # Check if running
-./manage.sh build    # Rebuild image
-./manage.sh clean    # Remove all output
-```
-
-### Configuration
-
-Copy `.env.example` to `.env` and customize:
-
-```bash
-# Whisper model
-MODEL_SIZE=large-v3
-
-# Device (cuda or cpu)
-DEVICE=cuda
-
-# Compute type
-COMPUTE_TYPE=float16
-```
-
-### API Endpoints
-
-The web UI exposes a REST API:
-
-```bash
-# Submit YouTube URLs
-curl -X POST http://localhost:8000/api/submit \
-  -H "Content-Type: application/json" \
-  -d '{"urls": "https://www.youtube.com/watch?v=VIDEO_ID"}'
-
-# Upload local files
-curl -X POST http://localhost:8000/api/upload \
-  -F "files=@video.mp4" \
-  -F "files=@audio.mp3"
-
-# List all jobs
-curl http://localhost:8000/api/jobs
-
-# Get job status
-curl http://localhost:8000/api/jobs/{job_id}
-
-# Download transcript
-curl http://localhost:8000/api/files/{video_id}/filename.txt
-
-# Get supported formats
-curl http://localhost:8000/api/formats
-
-# Health check
-curl http://localhost:8000/health
 ```
 
 ---
@@ -286,56 +217,43 @@ curl http://localhost:8000/health
 
 ```
 output/
-├── audio/                          # Temp audio (deleted after processing)
-└── transcripts/
-    └── MEDIA_ID/
-        ├── metadata.json           # File info + settings
-        ├── Video_Title.srt         # SubRip subtitles
-        ├── Video_Title.vtt         # WebVTT subtitles
-        ├── Video_Title.txt         # Plain text + timestamps
-        └── Video_Title.json        # Full data + word timestamps
-```
-
-### Output Formats
-
-**SRT** - Standard subtitle format for video players:
-```
-1
-00:00:00,000 --> 00:00:04,500
-Hello and welcome to today's video.
-```
-
-**VTT** - Web-friendly subtitles:
-```
-WEBVTT
-
-1
-00:00:00.000 --> 00:00:04.500
-Hello and welcome to today's video.
-```
-
-**TXT** - Readable plain text:
-```
-[00:00:00.000] Hello and welcome to today's video.
-```
-
-**JSON** - Full data with word-level timestamps:
-```json
-{
-  "segments": [{
-    "start": 0.0,
-    "end": 4.5,
-    "text": "Hello and welcome",
-    "words": [{"word": "Hello", "start": 0.0, "end": 0.5}, ...]
-  }]
-}
+├── transcripts/
+│   └── VIDEO_ID/
+│       ├── metadata.json
+│       ├── Video_Title.srt
+│       ├── Video_Title.vtt
+│       ├── Video_Title.txt
+│       └── Video_Title.json
+│
+└── speaker_extract/           # Speaker ID outputs
+    ├── video_kyle.txt         # Just your text
+    ├── video_kyle.srt         # Your subtitles
+    ├── video_kyle.wav         # Audio of just you
+    └── video_kyle.json        # Full data with confidence scores
 ```
 
 ---
 
-## Installation Details
+## Supported Formats
 
-### Manual Setup (without setup.sh)
+**Video:** MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, MPEG, MPG, 3GP
+
+**Audio:** MP3, WAV, M4A, AAC, OGG, FLAC, WMA, Opus
+
+---
+
+## Installation
+
+### Quick Setup
+
+```bash
+git clone https://github.com/kylefoxaustin/media-transcriber.git
+cd media-transcriber
+bash setup.sh
+source venv/bin/activate
+```
+
+### Manual Setup
 
 ```bash
 # System dependencies
@@ -347,127 +265,69 @@ python3 -m venv venv
 source venv/bin/activate
 
 # Install packages
-pip install faster-whisper yt-dlp
-
-# For web UI
-pip install fastapi uvicorn python-multipart
-
-# For diarization (optional)
-pip install git+https://github.com/m-bain/whisperx.git
+pip install -r requirements.txt
 ```
 
-### cuDNN Setup
+### cuDNN Setup (if needed)
 
 If you get `Unable to load libcudnn_ops.so`:
 
 ```bash
-# Install cuDNN
 sudo apt install libcudnn9-cuda-12
 sudo ldconfig
-
-# Verify
-ldconfig -p | grep cudnn
 ```
 
-### Docker Prerequisites
+---
 
-```bash
-# Install NVIDIA Container Toolkit
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
-  sudo tee /etc/apt/sources.list.d/nvidia-docker.list
-sudo apt update
-sudo apt install nvidia-container-toolkit
-sudo systemctl restart docker
-```
+## Requirements
+
+- Python 3.10+
+- NVIDIA GPU with CUDA support (or CPU fallback)
+- ~10GB disk space for Whisper large-v3 model
+- ~1GB for speaker recognition model
+- ffmpeg
+- Docker (optional, for web UI)
 
 ---
 
 ## Performance
 
 **RTX 5090 + large-v3:**
-- ~15x realtime (1 hour video ≈ 4 minutes)
+- Transcription: ~15x realtime (1 hour video ≈ 4 minutes)
+- Speaker ID: ~30 segments/minute
 
 **RTX 3080 + large-v3:**
-- ~5x realtime (1 hour video ≈ 12 minutes)
-
-**CPU + small model:**
-- ~0.5x realtime (1 hour video ≈ 2 hours)
+- Transcription: ~5x realtime (1 hour video ≈ 12 minutes)
 
 ---
 
 ## Troubleshooting
 
 ### "CUDA out of memory"
-Use a smaller model or int8 quantization:
 ```bash
 python transcribe.py --model medium video.mp4
-python transcribe.py --compute-type int8 video.mp4
 ```
 
-### "ffmpeg not found"
+### "SpeechBrain not installed"
 ```bash
-sudo apt install ffmpeg
+pip install speechbrain torchaudio
 ```
 
-### "Unable to load libcudnn"
-```bash
-sudo apt install libcudnn9-cuda-12
-sudo ldconfig
-```
+### Low speaker match accuracy
+- Use a cleaner voice sample (just you, no background noise)
+- Try a longer sample (60+ seconds)
+- Lower the threshold: `--threshold 0.5`
 
-### yt-dlp JavaScript warnings
-These are harmless. To silence:
-```bash
-sudo apt install deno
-```
-
-### Docker GPU not working
-```bash
-# Test GPU access
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
-```
-
-### Uploaded files not processing
-Check that the uploads directory has proper permissions:
-```bash
-docker compose exec transcriber ls -la /app/uploads
-```
-
----
-
-## Tips & Tricks
-
-### Transcribe Google Photos videos
-1. Download videos from Google Photos (or use Google Takeout for bulk export)
-2. Either upload via web UI or use CLI:
-```bash
-python transcribe.py --folder ~/Downloads/google-photos-export/
-```
-
-### Process overnight
-```bash
-nohup python transcribe.py --folder ~/Videos/ > log.txt 2>&1 &
-tail -f transcription.log
-```
-
-### Search transcripts
-```bash
-grep -r "keyword" output/transcripts/
-```
-
-### Extract channel URLs
-```bash
-yt-dlp --flat-playlist --print url \
-  "https://www.youtube.com/@ChannelName/videos" > channel_urls.txt
-```
+### No matches found
+- Threshold might be too high: try `--threshold 0.4`
+- Voice sample quality might be poor
+- Background noise in target video
 
 ---
 
 ## Author
 
-**Kyle Fox** - [GitHub](https://github.com/kylefox1)
+**Kyle Fox** - [GitHub](https://github.com/kylefoxaustin)
 
 ## License
 
@@ -475,9 +335,15 @@ MIT License - Use freely for personal and commercial projects.
 
 ## Credits
 
-Built with these excellent open-source projects:
 - [faster-whisper](https://github.com/guillaumekln/faster-whisper)
-- [whisperX](https://github.com/m-bain/whisperx)
+- [SpeechBrain](https://speechbrain.github.io/) - Speaker verification
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [OpenAI Whisper](https://github.com/openai/whisper)
+
+---
+
+## Version History
+
+- **v1.1.0** - Speaker identification: voice profiles and speaker extraction
+- **v1.0.0** - Initial release: YouTube + local file transcription

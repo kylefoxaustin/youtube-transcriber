@@ -37,3 +37,41 @@ Thumbs.db
 # Misc
 *.bak
 uploads/
+
+# Test media files
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wmv
+*.flv
+*.webm
+*.m4v
+*.mpeg
+*.mpg
+*.3gp
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.ogg
+*.flac
+*.wma
+
+# Voice profiles (contain personal voiceprints)
+voice_profiles/
+
+# Speaker recognition model cache
+models/
+
+# Output directories
+output/
+uploads/
+
+# Uppercase extensions (case-sensitive on Linux)
+*.MP4
+*.MOV
+*.AVI
+*.MKV
+*.WAV
+*.MP3
